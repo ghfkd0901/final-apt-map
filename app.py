@@ -52,11 +52,35 @@ def load_data():
             break
         except:
             continue
+
+    # ── 불필요한 컬럼 제거 ──────────────────────────────────
+    drop_cols = ['공동주택계약', '설치위치', 'Unnamed: 10']
+    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+
+    # ── 좌표 필터링 ─────────────────────────────────────────
     df = df.dropna(subset=['위도', '경도'])
     df = df[(df['위도'] > 33) & (df['위도'] < 39)]
     df = df[(df['경도'] > 124) & (df['경도'] < 132)]
-    df['세대수'] = pd.to_numeric(df['세대수'].astype(str).str.replace(',', '', regex=False), errors='coerce').fillna(0).astype(int)
+
+    # ── 세대수 숫자 변환 ────────────────────────────────────
+    df['세대수'] = pd.to_numeric(
+        df['세대수'].astype(str).str.replace(',', '', regex=False),
+        errors='coerce'
+    ).fillna(0).astype(int)
+
+    # ── 그룹화 (세대수 합산) ────────────────────────────────
+    GROUP_KEYS = ['아파트명', '아파트코드', '도로명주소', '난방구분', '용도', '서비스센터']
+    other_cols = [c for c in df.columns if c not in GROUP_KEYS and c != '세대수']
+    agg_dict = {'세대수': 'sum', **{c: 'first' for c in other_cols}}
+
+    df = (
+        df.groupby(GROUP_KEYS, as_index=False, dropna=False)
+          .agg(agg_dict)
+    )
+
+    # ── 마커 색상 ───────────────────────────────────────────
     df['color'] = df['난방구분'].apply(get_color)
+
     return df.reset_index(drop=True)
 
 @st.cache_data
@@ -107,7 +131,20 @@ with st.sidebar:
     st.subheader("🏠 세대수")
     hoga_min = int(df_all['세대수'].min())
     hoga_max = int(df_all['세대수'].max())
-    sel_hoga = st.slider("세대수 범위", hoga_min, hoga_max, (hoga_min, hoga_max), step=1)
+
+    col_min, col_max = st.columns(2)
+    with col_min:
+        input_min = st.number_input("최솟값", min_value=hoga_min, max_value=hoga_max,
+                                     value=hoga_min, step=1)
+    with col_max:
+        input_max = st.number_input("최댓값", min_value=hoga_min, max_value=hoga_max,
+                                     value=hoga_max, step=1)
+
+    if input_min > input_max:
+        st.warning("최솟값이 최댓값보다 클 수 없습니다.")
+        input_min, input_max = input_max, input_min
+
+    sel_hoga = (input_min, input_max)
 
     st.header("🗺️ 지도 옵션")
     marker_radius   = st.slider("마커 크기", 30, 200, 80)
@@ -144,13 +181,35 @@ if sel_gosi_nm:  df = df[df['고시지역명'].isin(sel_gosi_nm)]
 df = df[df['세대수'].between(sel_hoga[0], sel_hoga[1])]
 df = df.reset_index(drop=True)
 
-# ── 메트릭 ──────────────────────────────────────────────────────
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("표시 아파트", f"{len(df):,}개")
-c2.metric("개별난방", f"{(df['난방구분'].str.strip()=='개별난방').sum():,}개")
-c3.metric("중앙난방(가스)", f"{(df['난방구분'].str.strip()=='중앙난방(가스)').sum():,}개")
-c4.metric("지역난방", f"{(df['난방구분'].str.strip()=='지역난방').sum():,}개")
-c5.metric("고시지역", f"{(df['고시여부']=='예').sum():,}개")
+# ── 메트릭 카드 (난방방식별 아파트수 + 세대수) ──────────────────
+heat_summary = (
+    df.groupby('난방구분', dropna=False)['세대수']
+      .agg(아파트수='count', 세대수합계='sum')
+      .reset_index()
+      .sort_values('세대수합계', ascending=False)
+)
+heat_summary['난방구분'] = heat_summary['난방구분'].fillna('기타')
+
+# 전체 합계 카드 + 난방방식별 카드
+total_cols = st.columns(2)
+total_cols[0].metric("🏢 전체 아파트", f"{len(df):,}개")
+total_cols[1].metric("👥 전체 세대수", f"{df['세대수'].sum():,}세대")
+
+st.markdown("")  # 간격
+
+heat_cols = st.columns(len(heat_summary))
+for i, (_, row) in enumerate(heat_summary.iterrows()):
+    label   = str(row['난방구분'])
+    dot_hex = HEAT_HEX.get(label, "#94a3b8")
+    heat_cols[i].markdown(
+        f'<div style="text-align:center;">'
+        f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+        f'background:{dot_hex};margin-right:4px;vertical-align:middle;"></span>'
+        f'<b style="font-size:13px;">{label}</b></div>'
+        f'<div style="text-align:center;font-size:20px;font-weight:700;">{row["아파트수"]:,}개</div>'
+        f'<div style="text-align:center;color:#888;font-size:12px;">{row["세대수합계"]:,}세대</div>',
+        unsafe_allow_html=True
+    )
 
 st.divider()
 
@@ -216,7 +275,7 @@ st.pydeck_chart(
 
 st.divider()
 
-# ── 데이터프레임 ─────────────────────────────────────────────────
+# ── 목록 & 상세 ──────────────────────────────────────────────────
 st.subheader(f"📋 목록 ({len(df):,}건)")
 st.caption("행을 클릭하면 아래에 상세정보가 표시됩니다.")
 
@@ -253,3 +312,35 @@ if selected_rows:
     st.markdown(f"**🌐 위치** : 위도 `{row.get('위도', '-')}` · 경도 `{row.get('경도', '-')}`")
     st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')} {row.get('읍면동명', '')}")
     st.markdown(f"**🏢 서비스센터** : {row.get('서비스센터', '-')}")
+
+st.divider()
+
+# ── 통계 탭 ─────────────────────────────────────────────────────
+st.subheader("📊 통계")
+tab1, tab2, tab3 = st.tabs(["난방방식별", "시군구별", "고시지역별"])
+
+with tab1:
+    g1 = df.groupby('난방구분')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
+    g1 = g1.sort_values('세대수합계', ascending=False)
+    g1['아파트수'] = g1['아파트수'].map('{:,}'.format)
+    g1['세대수합계'] = g1['세대수합계'].map('{:,}'.format)
+    g1.columns = ['난방방식', '아파트수', '세대수 합계']
+    st.dataframe(g1, use_container_width=True, hide_index=True)
+
+with tab2:
+    g2 = df.groupby('시군구명')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
+    g2 = g2.sort_values('세대수합계', ascending=False)
+    g2['아파트수'] = g2['아파트수'].map('{:,}'.format)
+    g2['세대수합계'] = g2['세대수합계'].map('{:,}'.format)
+    g2.columns = ['시군구', '아파트수', '세대수 합계']
+    st.dataframe(g2, use_container_width=True, hide_index=True)
+
+with tab3:
+    g3 = df.groupby('고시여부')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
+    g3_nm = df[df['고시여부']=='예'].groupby('고시지역명')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
+    g3.columns = ['구분', '아파트수', '세대수 합계']
+    g3_nm.columns = ['구분', '아파트수', '세대수 합계']
+    combined = pd.concat([g3, g3_nm], ignore_index=True)
+    combined['아파트수'] = combined['아파트수'].map('{:,}'.format)
+    combined['세대수 합계'] = combined['세대수 합계'].map('{:,}'.format)
+    st.dataframe(combined, use_container_width=True, hide_index=True)
