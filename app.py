@@ -151,7 +151,7 @@ with st.sidebar:
     show_geojson    = st.toggle("고시지역 표시", value=True)
     geojson_opacity = st.slider("고시지역 투명도", 0.0, 1.0, 0.25, step=0.05,
                                 disabled=not show_geojson)
-    map_style = st.selectbox("배경지도", ["다크", "라이트", "일반"])
+    map_style = st.selectbox("배경지도", ["다크", "라이트", "일반"], index=2)
     STYLE_MAP = {
         "다크":  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
         "라이트": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
