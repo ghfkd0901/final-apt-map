@@ -122,6 +122,10 @@ with st.sidebar:
     sgg_opts = sorted(sgg_base['시군구명'].dropna().unique().tolist())
     sel_sgg  = st.multiselect("시군구", sgg_opts)
 
+    adm_base = df_all[df_all['시군구명'].isin(sel_sgg)] if sel_sgg else sgg_base
+    adm_opts = sorted(adm_base['읍면동명'].dropna().unique().tolist()) if '읍면동명' in df_all.columns else []
+    sel_adm  = st.multiselect("읍면동", adm_opts)
+
     heat_opts = sorted(df_all['난방구분'].dropna().unique().tolist())
     sel_heat  = st.multiselect("난방방식", heat_opts)
 
@@ -194,6 +198,7 @@ if search_apt:       df = df[df['아파트명'].str.contains(search_apt, na=Fals
 if search_addr:      df = df[df['도로명주소'].str.contains(search_addr, na=False, case=False, regex=False)]
 if sel_sido:         df = df[df['시도명'].isin(sel_sido)]
 if sel_sgg:          df = df[df['시군구명'].isin(sel_sgg)]
+if sel_adm:          df = df[df['읍면동명'].isin(sel_adm)]
 if sel_heat:         df = df[df['난방구분'].isin(sel_heat)]
 if sel_yong:         df = df[df['용도'].isin(sel_yong)]
 if sel_upjong_cls:   df = df[df['자체업종분류'].isin(sel_upjong_cls)]
@@ -303,7 +308,7 @@ st.subheader(f"📋 목록 ({len(df):,}건)")
 st.caption("행을 클릭하면 아래에 상세정보가 표시됩니다.")
 
 DISPLAY_COLS = ['아파트명', '아파트코드', '난방구분', '자체업종분류', '자체업종명', '고시여부', '고시지역명',
-                '세대수', '용도', '서비스센터', '시군구명', '도로명주소']
+                '세대수', '용도', '서비스센터', '시군구명', '읍면동명', '도로명주소']
 display_cols = [c for c in DISPLAY_COLS if c in df.columns]
 
 event = st.dataframe(
@@ -335,7 +340,7 @@ if selected_rows:
         st.metric("자체업종분류", row.get('자체업종분류', '-') or '-')
     st.markdown(f"**📍 주소** : {row.get('도로명주소', '-')}")
     st.markdown(f"**🌐 위치** : 위도 `{row.get('위도', '-')}` · 경도 `{row.get('경도', '-')}`")
-    st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')}")
+    st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')} {row.get('읍면동명', '')}")
     st.markdown(f"**🏢 서비스센터** : {row.get('서비스센터', '-')}")
 
 st.divider()
