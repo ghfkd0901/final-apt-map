@@ -11,6 +11,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# 경상북도에 속하는 시군구 (그 외는 모두 대구광역시)
+GYEONGBUK_SGG = {'경산시', '고령군'}
+
 HEAT_COLORS = {
     "개별난방":        [74,  158, 255, 220],
     "지역난방":        [62,  207, 142, 220],
@@ -38,10 +41,19 @@ def get_color(heat_type):
         return DEFAULT_COLOR
     return HEAT_COLORS.get(str(heat_type).strip(), DEFAULT_COLOR)
 
-def get_hex(heat_type):
-    if pd.isna(heat_type):
-        return "#94a3b8"
-    return HEAT_HEX.get(str(heat_type).strip(), "#94a3b8")
+# ── 도로명주소 → 시군구명 / 시도명 규칙 ───────────────────────
+def addr_to_sgg(addr):
+    if pd.isna(addr) or not str(addr).strip():
+        return None
+    toks = str(addr).strip().split()
+    if toks and toks[0].endswith(('특별시', '광역시', '특별자치시', '특별자치도', '도')):
+        toks = toks[1:]
+    return toks[0] if toks else None
+
+def sgg_to_sido(sgg):
+    if sgg is None or (isinstance(sgg, float) and pd.isna(sgg)):
+        return None
+    return '경상북도' if sgg in GYEONGBUK_SGG else '대구광역시'
 
 @st.cache_data
 def load_data():
@@ -53,8 +65,8 @@ def load_data():
         except:
             continue
 
-    # ── 불필요한 컬럼 제거 ──────────────────────────────────
-    drop_cols = ['공동주택계약', '설치위치', 'Unnamed: 10']
+    # ── 불필요한 컬럼 제거 (Unnamed 꼬리 컬럼 전부) ─────────
+    drop_cols = ['공동주택계약', '설치위치'] + [c for c in df.columns if str(c).startswith('Unnamed')]
     df = df.drop(columns=[c for c in drop_cols if c in df.columns])
 
     # ── 좌표 필터링 ─────────────────────────────────────────
@@ -72,11 +84,11 @@ def load_data():
     GROUP_KEYS = ['아파트명', '아파트코드', '도로명주소', '난방구분', '용도', '서비스센터']
     other_cols = [c for c in df.columns if c not in GROUP_KEYS and c != '세대수']
     agg_dict = {'세대수': 'sum', **{c: 'first' for c in other_cols}}
+    df = df.groupby(GROUP_KEYS, as_index=False, dropna=False).agg(agg_dict)
 
-    df = (
-        df.groupby(GROUP_KEYS, as_index=False, dropna=False)
-          .agg(agg_dict)
-    )
+    # ── 시도명/시군구명 보정 (도로명주소 기준, 비어있어도 항상 채움) ──
+    df['시군구명'] = df['도로명주소'].apply(addr_to_sgg)
+    df['시도명']   = df['시군구명'].apply(sgg_to_sido)
 
     # ── 마커 색상 ───────────────────────────────────────────
     df['color'] = df['난방구분'].apply(get_color)
@@ -110,15 +122,25 @@ with st.sidebar:
     sgg_opts = sorted(sgg_base['시군구명'].dropna().unique().tolist())
     sel_sgg  = st.multiselect("시군구", sgg_opts)
 
-    adm_base = df_all[df_all['시군구명'].isin(sel_sgg)] if sel_sgg else sgg_base
-    adm_opts = sorted(adm_base['읍면동명'].dropna().unique().tolist())
-    sel_adm  = st.multiselect("읍면동", adm_opts)
-
     heat_opts = sorted(df_all['난방구분'].dropna().unique().tolist())
     sel_heat  = st.multiselect("난방방식", heat_opts)
 
     yong_opts = sorted(df_all['용도'].dropna().unique().tolist())
     sel_yong  = st.multiselect("용도", yong_opts)
+
+    # ── 업종 (자체업종분류 → 자체업종명 캐스케이드) ─────────
+    if '자체업종분류' in df_all.columns:
+        upjong_cls_opts = sorted(df_all['자체업종분류'].dropna().unique().tolist())
+        sel_upjong_cls  = st.multiselect("자체업종분류", upjong_cls_opts)
+    else:
+        sel_upjong_cls = []
+
+    if '자체업종명' in df_all.columns:
+        upj_base    = df_all[df_all['자체업종분류'].isin(sel_upjong_cls)] if sel_upjong_cls else df_all
+        upjong_opts = sorted(upj_base['자체업종명'].dropna().unique().tolist())
+        sel_upjong  = st.multiselect("자체업종명", upjong_opts)
+    else:
+        sel_upjong = []
 
     svc_opts = sorted(df_all['서비스센터'].dropna().unique().tolist())
     sel_svc  = st.multiselect("서비스센터", svc_opts)
@@ -168,16 +190,17 @@ with st.sidebar:
 
 # ── 필터링 ───────────────────────────────────────────────────────
 df = df_all.copy()
-if search_apt:   df = df[df['아파트명'].str.contains(search_apt, na=False, case=False, regex=False)]
-if search_addr:  df = df[df['도로명주소'].str.contains(search_addr, na=False, case=False, regex=False)]
-if sel_sido:     df = df[df['시도명'].isin(sel_sido)]
-if sel_sgg:      df = df[df['시군구명'].isin(sel_sgg)]
-if sel_adm:      df = df[df['읍면동명'].isin(sel_adm)]
-if sel_heat:     df = df[df['난방구분'].isin(sel_heat)]
-if sel_yong:     df = df[df['용도'].isin(sel_yong)]
-if sel_svc:      df = df[df['서비스센터'].isin(sel_svc)]
-if sel_gosi_yn:  df = df[df['고시여부'].isin(sel_gosi_yn)]
-if sel_gosi_nm:  df = df[df['고시지역명'].isin(sel_gosi_nm)]
+if search_apt:       df = df[df['아파트명'].str.contains(search_apt, na=False, case=False, regex=False)]
+if search_addr:      df = df[df['도로명주소'].str.contains(search_addr, na=False, case=False, regex=False)]
+if sel_sido:         df = df[df['시도명'].isin(sel_sido)]
+if sel_sgg:          df = df[df['시군구명'].isin(sel_sgg)]
+if sel_heat:         df = df[df['난방구분'].isin(sel_heat)]
+if sel_yong:         df = df[df['용도'].isin(sel_yong)]
+if sel_upjong_cls:   df = df[df['자체업종분류'].isin(sel_upjong_cls)]
+if sel_upjong:       df = df[df['자체업종명'].isin(sel_upjong)]
+if sel_svc:          df = df[df['서비스센터'].isin(sel_svc)]
+if sel_gosi_yn:      df = df[df['고시여부'].isin(sel_gosi_yn)]
+if sel_gosi_nm:      df = df[df['고시지역명'].isin(sel_gosi_nm)]
 df = df[df['세대수'].between(sel_hoga[0], sel_hoga[1])]
 df = df.reset_index(drop=True)
 
@@ -190,26 +213,26 @@ heat_summary = (
 )
 heat_summary['난방구분'] = heat_summary['난방구분'].fillna('기타')
 
-# 전체 합계 카드 + 난방방식별 카드
 total_cols = st.columns(2)
 total_cols[0].metric("🏢 전체 아파트", f"{len(df):,}개")
 total_cols[1].metric("👥 전체 세대수", f"{df['세대수'].sum():,}세대")
 
 st.markdown("")  # 간격
 
-heat_cols = st.columns(len(heat_summary))
-for i, (_, row) in enumerate(heat_summary.iterrows()):
-    label   = str(row['난방구분'])
-    dot_hex = HEAT_HEX.get(label, "#94a3b8")
-    heat_cols[i].markdown(
-        f'<div style="text-align:center;">'
-        f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
-        f'background:{dot_hex};margin-right:4px;vertical-align:middle;"></span>'
-        f'<b style="font-size:13px;">{label}</b></div>'
-        f'<div style="text-align:center;font-size:20px;font-weight:700;">{row["아파트수"]:,}개</div>'
-        f'<div style="text-align:center;color:#888;font-size:12px;">{row["세대수합계"]:,}세대</div>',
-        unsafe_allow_html=True
-    )
+if len(heat_summary) > 0:
+    heat_cols = st.columns(len(heat_summary))
+    for i, (_, row) in enumerate(heat_summary.iterrows()):
+        label   = str(row['난방구분'])
+        dot_hex = HEAT_HEX.get(label, "#94a3b8")
+        heat_cols[i].markdown(
+            f'<div style="text-align:center;">'
+            f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+            f'background:{dot_hex};margin-right:4px;vertical-align:middle;"></span>'
+            f'<b style="font-size:13px;">{label}</b></div>'
+            f'<div style="text-align:center;font-size:20px;font-weight:700;">{row["아파트수"]:,}개</div>'
+            f'<div style="text-align:center;color:#888;font-size:12px;">{row["세대수합계"]:,}세대</div>',
+            unsafe_allow_html=True
+        )
 
 st.divider()
 
@@ -247,7 +270,7 @@ layers.append(pdk.Layer(
 ))
 
 tooltip = {
-    "html": "<b>{아파트명}</b><br>난방: {난방구분} · {세대수}세대<br>고시: {고시여부} {고시지역명}<br>{도로명주소}",
+    "html": "<b>{아파트명}</b><br>난방: {난방구분} · {세대수}세대<br>업종: {자체업종분류} · {자체업종명}<br>고시: {고시여부} {고시지역명}<br>{도로명주소}",
     "style": {
         "backgroundColor": "#0f1923",
         "color": "#e8f4ff",
@@ -279,8 +302,8 @@ st.divider()
 st.subheader(f"📋 목록 ({len(df):,}건)")
 st.caption("행을 클릭하면 아래에 상세정보가 표시됩니다.")
 
-DISPLAY_COLS = ['아파트명', '아파트코드', '난방구분', '고시여부', '고시지역명',
-                '세대수', '용도', '서비스센터', '시군구명', '읍면동명', '도로명주소']
+DISPLAY_COLS = ['아파트명', '아파트코드', '난방구분', '자체업종분류', '자체업종명', '고시여부', '고시지역명',
+                '세대수', '용도', '서비스센터', '시군구명', '도로명주소']
 display_cols = [c for c in DISPLAY_COLS if c in df.columns]
 
 event = st.dataframe(
@@ -305,19 +328,21 @@ if selected_rows:
     with d2:
         st.metric("난방구분", row.get('난방구분', '-'))
         st.metric("용도", row.get('용도', '-'))
+        st.metric("자체업종명", row.get('자체업종명', '-') or '-')
     with d3:
         st.metric("고시여부", row.get('고시여부', '-'))
         st.metric("고시지역명", row.get('고시지역명', '-') or '-')
+        st.metric("자체업종분류", row.get('자체업종분류', '-') or '-')
     st.markdown(f"**📍 주소** : {row.get('도로명주소', '-')}")
     st.markdown(f"**🌐 위치** : 위도 `{row.get('위도', '-')}` · 경도 `{row.get('경도', '-')}`")
-    st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')} {row.get('읍면동명', '')}")
+    st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')}")
     st.markdown(f"**🏢 서비스센터** : {row.get('서비스센터', '-')}")
 
 st.divider()
 
 # ── 통계 탭 ─────────────────────────────────────────────────────
 st.subheader("📊 통계")
-tab1, tab2, tab3 = st.tabs(["난방방식별", "시군구별", "고시지역별"])
+tab1, tab2, tab3, tab4 = st.tabs(["난방방식별", "시군구별", "고시지역별", "업종별"])
 
 with tab1:
     g1 = df.groupby('난방구분')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
@@ -344,3 +369,14 @@ with tab3:
     combined['아파트수'] = combined['아파트수'].map('{:,}'.format)
     combined['세대수 합계'] = combined['세대수 합계'].map('{:,}'.format)
     st.dataframe(combined, use_container_width=True, hide_index=True)
+
+with tab4:
+    if '자체업종분류' in df.columns:
+        g4 = df.groupby('자체업종분류')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
+        g4 = g4.sort_values('세대수합계', ascending=False)
+        g4['아파트수'] = g4['아파트수'].map('{:,}'.format)
+        g4['세대수합계'] = g4['세대수합계'].map('{:,}'.format)
+        g4.columns = ['자체업종분류', '아파트수', '세대수 합계']
+        st.dataframe(g4, use_container_width=True, hide_index=True)
+    else:
+        st.info("자체업종분류 컬럼이 데이터에 없습니다.")
