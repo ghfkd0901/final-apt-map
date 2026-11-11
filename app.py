@@ -41,11 +41,14 @@ def get_color(heat_type):
     return HEAT_COLORS.get(str(heat_type).strip(), DEFAULT_COLOR)
 
 # 공급승인연도 구간 (색상·통계용)
-ERA_BINS   = [0, 1990, 2000, 2010, 2020, 9999]
-ERA_LABELS = ["~1990", "1991~2000", "2001~2010", "2011~2020", "2021~"]
+# 1983-01-01 = 전산화 이전 공급분 일괄등록일 (실제 승인일 아님)
+BULK_DATE  = pd.Timestamp("1983-01-01")
+ERA_BINS   = [0, 2000, 2010, 2020, 9999]
+ERA_LABELS = ["~2000", "2001~2010", "2011~2020", "2021~"]
+ERA_ORDER  = ["1983 일괄등록"] + ERA_LABELS + ["미상"]
 ERA_COLORS = {
-    "~1990":     [127,  29,  29, 220],
-    "1991~2000": [234,  88,  12, 220],
+    "1983 일괄등록": [100, 116, 139, 200],
+    "~2000":     [234,  88,  12, 220],
     "2001~2010": [250, 204,  21, 220],
     "2011~2020": [ 34, 197,  94, 220],
     "2021~":     [ 59, 130, 246, 220],
@@ -62,6 +65,7 @@ def load_data():
     df["공급승인연도"] = df["공급승인일자"].dt.year.astype("Int64")
     df["승인연도구간"] = (pd.cut(df["공급승인연도"].astype(float), ERA_BINS, labels=ERA_LABELS)
                           .astype(str).replace("nan", "미상"))
+    df.loc[df["공급승인일자"] == BULK_DATE, "승인연도구간"] = "1983 일괄등록"
     df["공급승인일자_표시"] = df["공급승인일자"].dt.strftime("%Y-%m-%d").fillna("-")
     df["heat_color"] = df["난방구분"].apply(get_color)
     df["era_color"]  = df["승인연도구간"].map(ERA_COLORS)
@@ -118,8 +122,8 @@ with st.sidebar:
     else:
         sel_upjong = []
 
-    svc_opts = sorted(df_all['서비스센터'].dropna().unique().tolist())
-    sel_svc  = st.multiselect("서비스센터", svc_opts)
+    svc_opts = sorted(df_all['고객센터'].dropna().unique().tolist())
+    sel_svc  = st.multiselect("고객센터", svc_opts)
 
     st.subheader("📌 고시지역")
     sel_gosi_yn = st.multiselect("고시여부", ["예", "아니오"])
@@ -127,11 +131,12 @@ with st.sidebar:
     sel_gosi_nm  = st.multiselect("고시지역명", gosi_nm_opts)
 
     st.subheader("📅 공급승인연도")
-    yr = df_all["공급승인연도"].dropna()
+    yr = df_all.loc[df_all["승인연도구간"] != "1983 일괄등록", "공급승인연도"].dropna()
     if len(yr):
         sel_year = st.slider("연도 범위", int(yr.min()), int(yr.max()),
                              (int(yr.min()), int(yr.max())))
-        include_no_date = st.checkbox("승인일자 없는 단지 포함", value=True)
+        include_no_date = st.checkbox("1983 일괄등록·미상 단지 포함", value=True,
+                                      help="1983-01-01은 전산화 이전 공급분의 일괄등록일로, 실제 승인일이 아닙니다.")
     else:
         sel_year, include_no_date = None, True
         st.caption("데이터에 공급승인일자가 없습니다.")
@@ -188,13 +193,14 @@ if sel_heat:         df = df[df['난방구분'].isin(sel_heat)]
 if sel_yong:         df = df[df['용도'].isin(sel_yong)]
 if sel_upjong_cls:   df = df[df['자체업종분류'].isin(sel_upjong_cls)]
 if sel_upjong:       df = df[df['자체업종명'].isin(sel_upjong)]
-if sel_svc:          df = df[df['서비스센터'].isin(sel_svc)]
+if sel_svc:          df = df[df['고객센터'].isin(sel_svc)]
 if sel_gosi_yn:      df = df[df['고시여부'].isin(sel_gosi_yn)]
 if sel_gosi_nm:      df = df[df['고시지역명'].isin(sel_gosi_nm)]
 df = df[df['세대수'].between(sel_hoga[0], sel_hoga[1])]
 if sel_year:
-    in_range = df['공급승인연도'].between(*sel_year).fillna(False).astype(bool)
-    df = df[in_range | (df['공급승인연도'].isna() & include_no_date)]
+    no_date  = df['승인연도구간'].isin(["1983 일괄등록", "미상"])
+    in_range = df['공급승인연도'].between(*sel_year).fillna(False).astype(bool) & ~no_date
+    df = df[in_range | (no_date & include_no_date)]
 df = df.reset_index(drop=True)
 df['color'] = df['heat_color'] if color_by == "난방방식" else df['era_color']
 
@@ -297,7 +303,7 @@ st.subheader(f"📋 목록 ({len(df):,}건)")
 st.caption("행을 클릭하면 아래에 상세정보가 표시됩니다.")
 
 DISPLAY_COLS = ['아파트명', '아파트코드', '난방구분', '자체업종분류', '자체업종명', '고시여부', '고시지역명',
-                '세대수', '공급승인일자_표시', '용도', '서비스센터', '시군구명', '읍면동명', '도로명주소']
+                '세대수', '공급승인일자_표시', '용도', '고객센터', '시군구명', '읍면동명', '도로명주소']
 display_cols = [c for c in DISPLAY_COLS if c in df.columns]
 
 event = st.dataframe(
@@ -332,7 +338,7 @@ if selected_rows:
     st.markdown(f"**📍 주소** : {row.get('도로명주소', '-')}")
     st.markdown(f"**🌐 위치** : 위도 `{row.get('위도', '-')}` · 경도 `{row.get('경도', '-')}`")
     st.markdown(f"**🗺️ 행정구역** : {row.get('시도명', '')} {row.get('시군구명', '')} {row.get('읍면동명', '')}")
-    st.markdown(f"**🏢 서비스센터** : {row.get('서비스센터', '-')}")
+    st.markdown(f"**🏢 고객센터** : {row.get('고객센터', '-')}")
 
 st.divider()
 
@@ -379,8 +385,8 @@ with tab4:
 
 with tab5:
     g5 = (df.groupby('승인연도구간')['세대수'].agg(아파트수='count', 세대수합계='sum')
-            .reindex(ERA_LABELS + ["미상"]).dropna().astype(int).reset_index())
+            .reindex(ERA_ORDER).dropna().astype(int).reset_index())
     g5.columns = ['공급승인연도', '아파트수', '세대수 합계']
     st.dataframe(g5, width="stretch", hide_index=True)
-    st.bar_chart(df.dropna(subset=['공급승인연도']).groupby('공급승인연도')['세대수'].sum(),
+    st.bar_chart(df[~df['승인연도구간'].isin(['1983 일괄등록', '미상'])].groupby('공급승인연도')['세대수'].sum(),
                  y_label="세대수")
