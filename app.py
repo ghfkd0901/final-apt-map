@@ -4,15 +4,14 @@ import pydeck as pdk
 import json
 from pathlib import Path
 
+DATA_DIR = Path(__file__).parent / "data"
+
 st.set_page_config(
     page_title="대성에너지 아파트 지도",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# 경상북도에 속하는 시군구 (그 외는 모두 대구광역시)
-GYEONGBUK_SGG = {'경산시', '고령군'}
 
 HEAT_COLORS = {
     "개별난방":        [74,  158, 255, 220],
@@ -41,63 +40,36 @@ def get_color(heat_type):
         return DEFAULT_COLOR
     return HEAT_COLORS.get(str(heat_type).strip(), DEFAULT_COLOR)
 
-# ── 도로명주소 → 시군구명 / 시도명 규칙 ───────────────────────
-def addr_to_sgg(addr):
-    if pd.isna(addr) or not str(addr).strip():
-        return None
-    toks = str(addr).strip().split()
-    if toks and toks[0].endswith(('특별시', '광역시', '특별자치시', '특별자치도', '도')):
-        toks = toks[1:]
-    return toks[0] if toks else None
-
-def sgg_to_sido(sgg):
-    if sgg is None or (isinstance(sgg, float) and pd.isna(sgg)):
-        return None
-    return '경상북도' if sgg in GYEONGBUK_SGG else '대구광역시'
+# 공급승인연도 구간 (색상·통계용)
+ERA_BINS   = [0, 1990, 2000, 2010, 2020, 9999]
+ERA_LABELS = ["~1990", "1991~2000", "2001~2010", "2011~2020", "2021~"]
+ERA_COLORS = {
+    "~1990":     [127,  29,  29, 220],
+    "1991~2000": [234,  88,  12, 220],
+    "2001~2010": [250, 204,  21, 220],
+    "2011~2020": [ 34, 197,  94, 220],
+    "2021~":     [ 59, 130, 246, 220],
+    "미상":      [148, 163, 184, 160],
+}
+ERA_HEX = {k: "#%02x%02x%02x" % tuple(v[:3]) for k, v in ERA_COLORS.items()}
 
 @st.cache_data
 def load_data():
-    path = Path(__file__).parent / "data" / "공동주택현황_최종.csv"
-    for enc in ['utf-8-sig', 'cp949', 'euc-kr']:
-        try:
-            df = pd.read_csv(path, encoding=enc)
-            break
-        except:
-            continue
-
-    # ── 불필요한 컬럼 제거 (Unnamed 꼬리 컬럼 전부) ─────────
-    drop_cols = ['공동주택계약', '설치위치'] + [c for c in df.columns if str(c).startswith('Unnamed')]
-    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
-
-    # ── 좌표 필터링 ─────────────────────────────────────────
-    df = df.dropna(subset=['위도', '경도'])
-    df = df[(df['위도'] > 33) & (df['위도'] < 39)]
-    df = df[(df['경도'] > 124) & (df['경도'] < 132)]
-
-    # ── 세대수 숫자 변환 ────────────────────────────────────
-    df['세대수'] = pd.to_numeric(
-        df['세대수'].astype(str).str.replace(',', '', regex=False),
-        errors='coerce'
-    ).fillna(0).astype(int)
-
-    # ── 그룹화 (세대수 합산) ────────────────────────────────
-    GROUP_KEYS = ['아파트명', '아파트코드', '도로명주소', '난방구분', '용도', '서비스센터']
-    other_cols = [c for c in df.columns if c not in GROUP_KEYS and c != '세대수']
-    agg_dict = {'세대수': 'sum', **{c: 'first' for c in other_cols}}
-    df = df.groupby(GROUP_KEYS, as_index=False, dropna=False).agg(agg_dict)
-
-    # ── 시도명/시군구명 보정 (도로명주소 기준, 비어있어도 항상 채움) ──
-    df['시군구명'] = df['도로명주소'].apply(addr_to_sgg)
-    df['시도명']   = df['시군구명'].apply(sgg_to_sido)
-
-    # ── 마커 색상 ───────────────────────────────────────────
-    df['color'] = df['난방구분'].apply(get_color)
-
-    return df.reset_index(drop=True)
+    # 전처리는 update_data.py 에서 끝남 — 여기선 읽기만
+    df = pd.read_csv(DATA_DIR / "output" / "공동주택_지도.csv",
+                     encoding="utf-8-sig", dtype={"아파트코드": str, "우편번호": str})
+    df["공급승인일자"] = pd.to_datetime(df["공급승인일자"], errors="coerce")
+    df["공급승인연도"] = df["공급승인일자"].dt.year.astype("Int64")
+    df["승인연도구간"] = (pd.cut(df["공급승인연도"].astype(float), ERA_BINS, labels=ERA_LABELS)
+                          .astype(str).replace("nan", "미상"))
+    df["공급승인일자_표시"] = df["공급승인일자"].dt.strftime("%Y-%m-%d").fillna("-")
+    df["heat_color"] = df["난방구분"].apply(get_color)
+    df["era_color"]  = df["승인연도구간"].map(ERA_COLORS)
+    return df
 
 @st.cache_data
 def load_geojson():
-    path = Path(__file__).parent / "data" / "고시지역.geojson"
+    path = DATA_DIR / "ref" / "고시지역.geojson"
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
@@ -154,6 +126,16 @@ with st.sidebar:
     gosi_nm_opts = sorted(df_all['고시지역명'].dropna().unique().tolist())
     sel_gosi_nm  = st.multiselect("고시지역명", gosi_nm_opts)
 
+    st.subheader("📅 공급승인연도")
+    yr = df_all["공급승인연도"].dropna()
+    if len(yr):
+        sel_year = st.slider("연도 범위", int(yr.min()), int(yr.max()),
+                             (int(yr.min()), int(yr.max())))
+        include_no_date = st.checkbox("승인일자 없는 단지 포함", value=True)
+    else:
+        sel_year, include_no_date = None, True
+        st.caption("데이터에 공급승인일자가 없습니다.")
+
     st.subheader("🏠 세대수")
     hoga_min = int(df_all['세대수'].min())
     hoga_max = int(df_all['세대수'].max())
@@ -184,8 +166,11 @@ with st.sidebar:
         "일반":  "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
     }
 
-    st.header("🎨 난방방식 범례")
-    for label, color in HEAT_HEX.items():
+    color_by = st.radio("마커 색상 기준", ["난방방식", "공급승인연도"], horizontal=True)
+    legend = HEAT_HEX if color_by == "난방방식" else ERA_HEX
+
+    st.header("🎨 범례")
+    for label, color in legend.items():
         st.markdown(
             f'<span style="display:inline-block;width:12px;height:12px;border-radius:50%;'
             f'background:{color};margin-right:8px;vertical-align:middle;"></span>{label}',
@@ -207,7 +192,11 @@ if sel_svc:          df = df[df['서비스센터'].isin(sel_svc)]
 if sel_gosi_yn:      df = df[df['고시여부'].isin(sel_gosi_yn)]
 if sel_gosi_nm:      df = df[df['고시지역명'].isin(sel_gosi_nm)]
 df = df[df['세대수'].between(sel_hoga[0], sel_hoga[1])]
+if sel_year:
+    in_range = df['공급승인연도'].between(*sel_year).fillna(False).astype(bool)
+    df = df[in_range | (df['공급승인연도'].isna() & include_no_date)]
 df = df.reset_index(drop=True)
+df['color'] = df['heat_color'] if color_by == "난방방식" else df['era_color']
 
 # ── 메트릭 카드 (난방방식별 아파트수 + 세대수) ──────────────────
 heat_summary = (
@@ -275,7 +264,7 @@ layers.append(pdk.Layer(
 ))
 
 tooltip = {
-    "html": "<b>{아파트명}</b><br>난방: {난방구분} · {세대수}세대<br>업종: {자체업종분류} · {자체업종명}<br>고시: {고시여부} {고시지역명}<br>{도로명주소}",
+    "html": "<b>{아파트명}</b><br>난방: {난방구분} · {세대수}세대<br>공급승인: {공급승인일자_표시}<br>업종: {자체업종분류} · {자체업종명}<br>고시: {고시여부} {고시지역명}<br>{도로명주소}",
     "style": {
         "backgroundColor": "#0f1923",
         "color": "#e8f4ff",
@@ -297,7 +286,7 @@ st.pydeck_chart(
         tooltip=tooltip,
         map_style=STYLE_MAP[map_style],
     ),
-    use_container_width=True,
+    width="stretch",
     height=520,
 )
 
@@ -308,14 +297,15 @@ st.subheader(f"📋 목록 ({len(df):,}건)")
 st.caption("행을 클릭하면 아래에 상세정보가 표시됩니다.")
 
 DISPLAY_COLS = ['아파트명', '아파트코드', '난방구분', '자체업종분류', '자체업종명', '고시여부', '고시지역명',
-                '세대수', '용도', '서비스센터', '시군구명', '읍면동명', '도로명주소']
+                '세대수', '공급승인일자_표시', '용도', '서비스센터', '시군구명', '읍면동명', '도로명주소']
 display_cols = [c for c in DISPLAY_COLS if c in df.columns]
 
 event = st.dataframe(
     df[display_cols],
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     height=350,
+    column_config={"공급승인일자_표시": "공급승인일자"},
     on_select="rerun",
     selection_mode="single-row",
 )
@@ -330,6 +320,7 @@ if selected_rows:
     with d1:
         st.metric("아파트코드", row.get('아파트코드', '-'))
         st.metric("세대수", f"{row.get('세대수', '-')}세대")
+        st.metric("공급승인일자", row.get('공급승인일자_표시', '-'))
     with d2:
         st.metric("난방구분", row.get('난방구분', '-'))
         st.metric("용도", row.get('용도', '-'))
@@ -347,7 +338,7 @@ st.divider()
 
 # ── 통계 탭 ─────────────────────────────────────────────────────
 st.subheader("📊 통계")
-tab1, tab2, tab3, tab4 = st.tabs(["난방방식별", "시군구별", "고시지역별", "업종별"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["난방방식별", "시군구별", "고시지역별", "업종별", "공급승인연도별"])
 
 with tab1:
     g1 = df.groupby('난방구분')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
@@ -355,7 +346,7 @@ with tab1:
     g1['아파트수'] = g1['아파트수'].map('{:,}'.format)
     g1['세대수합계'] = g1['세대수합계'].map('{:,}'.format)
     g1.columns = ['난방방식', '아파트수', '세대수 합계']
-    st.dataframe(g1, use_container_width=True, hide_index=True)
+    st.dataframe(g1, width="stretch", hide_index=True)
 
 with tab2:
     g2 = df.groupby('시군구명')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
@@ -363,7 +354,7 @@ with tab2:
     g2['아파트수'] = g2['아파트수'].map('{:,}'.format)
     g2['세대수합계'] = g2['세대수합계'].map('{:,}'.format)
     g2.columns = ['시군구', '아파트수', '세대수 합계']
-    st.dataframe(g2, use_container_width=True, hide_index=True)
+    st.dataframe(g2, width="stretch", hide_index=True)
 
 with tab3:
     g3 = df.groupby('고시여부')['세대수'].agg(아파트수='count', 세대수합계='sum').reset_index()
@@ -373,7 +364,7 @@ with tab3:
     combined = pd.concat([g3, g3_nm], ignore_index=True)
     combined['아파트수'] = combined['아파트수'].map('{:,}'.format)
     combined['세대수 합계'] = combined['세대수 합계'].map('{:,}'.format)
-    st.dataframe(combined, use_container_width=True, hide_index=True)
+    st.dataframe(combined, width="stretch", hide_index=True)
 
 with tab4:
     if '자체업종분류' in df.columns:
@@ -382,6 +373,14 @@ with tab4:
         g4['아파트수'] = g4['아파트수'].map('{:,}'.format)
         g4['세대수합계'] = g4['세대수합계'].map('{:,}'.format)
         g4.columns = ['자체업종분류', '아파트수', '세대수 합계']
-        st.dataframe(g4, use_container_width=True, hide_index=True)
+        st.dataframe(g4, width="stretch", hide_index=True)
     else:
         st.info("자체업종분류 컬럼이 데이터에 없습니다.")
+
+with tab5:
+    g5 = (df.groupby('승인연도구간')['세대수'].agg(아파트수='count', 세대수합계='sum')
+            .reindex(ERA_LABELS + ["미상"]).dropna().astype(int).reset_index())
+    g5.columns = ['공급승인연도', '아파트수', '세대수 합계']
+    st.dataframe(g5, width="stretch", hide_index=True)
+    st.bar_chart(df.dropna(subset=['공급승인연도']).groupby('공급승인연도')['세대수'].sum(),
+                 y_label="세대수")
