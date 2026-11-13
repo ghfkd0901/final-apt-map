@@ -5,7 +5,7 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-from common import HEAT_COLORS, HEAT_HEX, load_data
+from common import HEAT_COLORS, HEAT_HEX, load_data, load_geojson
 
 GIS_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
 
@@ -111,14 +111,17 @@ mdf = df.dropna(subset=["위도", "경도"]).copy()
 mdf["color"] = mdf["난방구분"].map(HEAT_COLORS).apply(lambda c: c if isinstance(c, list) else [148, 163, 184, 220])
 mdf["경과"] = mdf["경과연수"].astype(str).replace("<NA>", "-")
 st.pydeck_chart(pdk.Deck(
-    layers=[pdk.Layer("ScatterplotLayer", data=mdf, get_position="[경도, 위도]", get_fill_color="color",
+    layers=[pdk.Layer("GeoJsonLayer", data=load_geojson(), stroked=True, filled=True,
+                      get_fill_color=[255, 165, 0, 60], get_line_color=[255, 140, 0, 220],
+                      line_width_min_pixels=1, pickable=False),
+            pdk.Layer("ScatterplotLayer", data=mdf, get_position="[경도, 위도]", get_fill_color="color",
                       get_radius=120, radius_min_pixels=4, radius_max_pixels=20, pickable=True)],
     initial_view_state=pdk.ViewState(latitude=mdf["위도"].mean(), longitude=mdf["경도"].mean(), zoom=10.5),
     tooltip={"html": "<b>{아파트명}</b><br>{난방구분} · {세대수}세대<br>"
                      "준공 {사용승인일_표시} (경과 {경과}년)<br>{도로명주소}"},
     map_style=GIS_STYLE,
 ), height=420)
-st.caption("  ".join(f"● {k}" for k in sel_heat if k in HEAT_HEX))
+st.caption("  ".join(f"● {k}" for k in sel_heat if k in HEAT_HEX) + "  ·  주황 영역: 지역난방 고시지역(제외 대상)")
 
 # ── 목록 ─────────────────────────────────────────────────────
 COLS = {"아파트명": "아파트명", "K-apt단지명": "K-apt 단지명", "시군구명": "시군구", "도로명주소": "도로명주소",
