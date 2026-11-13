@@ -7,7 +7,6 @@ import streamlit as st
 
 from common import HEAT_COLORS, HEAT_HEX, load_data
 
-PRIORITY_HEAT = ["중앙난방(가스)", "중앙난방(기름)", "기타"]
 GIS_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
 
 
@@ -23,30 +22,43 @@ def heat_check(row):
 
 
 df_all = load_data()
-base = df_all[df_all["난방구분"] != "개별난방"].copy()
+# ── 선정 기준 (고정) ─────────────────────────────────────────
+base = df_all[(df_all["난방구분"] != "개별난방") & (df_all["고시여부"] != "예")].copy()
 base["난방확인"] = base.apply(heat_check, axis=1)
 
 st.title("🎯 영업대상")
-st.caption("개별난방이 아닌 단지 중 지역난방 고시지역 밖 · 준공(사용승인)이 오래된 순. "
-           "사용승인일은 국토교통부 K-apt 기본정보를 주소로 매칭한 값입니다.")
+st.info(
+    f"**선정 기준** — 전체 {len(df_all):,}개 단지 중 아래 두 조건을 모두 만족하는 **{len(base):,}개 단지 "
+    f"({base['세대수'].sum():,}세대)**\n\n"
+    "1. 난방구분이 **개별난방이 아님** — 대성에너지는 개별난방(세대별 가스보일러)만 공급하므로, "
+    "지역난방·중앙난방·집단에너지·열병합 등 나머지는 모두 **개별난방 전환 영업 대상**\n"
+    "2. **지역난방 고시지역 밖** — 고시지역 안은 지역난방 공급지역으로 지정되어 있어 제외\n\n"
+    "이 안에서 왼쪽 필터로 좁혀 볼 수 있습니다. 목록은 준공(사용승인)이 오래된 순입니다."
+)
 
-# ── 필터 ─────────────────────────────────────────────────────
+with st.expander("선정 기준 내 난방구분별 현황", expanded=False):
+    g = (base.groupby("난방구분")
+             .agg(단지수=("아파트명", "size"), 세대수=("세대수", "sum"),
+                  사용승인일확인=("사용승인일", "count"))
+             .sort_values("세대수", ascending=False).reset_index())
+    st.dataframe(g, hide_index=True, width="stretch")
+
+# ── 필터 (기준 안에서 좁히기) ─────────────────────────────────
 with st.sidebar:
-    st.header("🎛️ 조건")
-    scope = st.radio("난방방식 범위", ["우선대상 (중앙난방·기타)", "개별난방 제외 전체", "직접 선택"])
-    heat_opts = sorted(base["난방구분"].dropna().unique())
-    if scope.startswith("우선"):
-        sel_heat = PRIORITY_HEAT
-    elif scope.startswith("개별"):
-        sel_heat = heat_opts
-    else:
-        sel_heat = st.multiselect("난방방식", heat_opts, default=PRIORITY_HEAT)
+    st.header("🎛️ 필터")
+    st.caption("선정 기준(개별난방 아님 · 고시지역 밖) 안에서 좁히기")
 
-    excl_gosi = st.checkbox("지역난방 고시지역 제외", value=True)
-    only_apt = st.checkbox("공동주택만", value=True)
+    heat_opts = base["난방구분"].value_counts().index.tolist()
+    sel_heat = st.multiselect("난방구분", heat_opts, default=heat_opts)
+
+    yong_opts = base["용도"].value_counts().index.tolist()
+    sel_yong = st.multiselect("용도", yong_opts, default=yong_opts)
 
     sgg_opts = sorted(base["시군구명"].dropna().unique())
     sel_sgg = st.multiselect("시군구", sgg_opts)
+
+    svc_opts = sorted(base["고객센터"].dropna().unique())
+    sel_svc = st.multiselect("고객센터", svc_opts)
 
     st.subheader("🏗️ 준공(사용승인) 연도")
     yr = base["준공연도"].dropna()
@@ -54,19 +66,26 @@ with st.sidebar:
     incl_unknown = st.checkbox("사용승인일 없는 단지 포함", value=True,
                                help="K-apt에 없는 단지(소규모·비주거 등)이거나 아직 조회 전인 단지")
 
+    st.subheader("🏠 세대수")
     min_hh = st.number_input("최소 세대수", min_value=0, value=0, step=50)
 
-df = base[base["난방구분"].isin(sel_heat)]
-if excl_gosi:
-    df = df[df["고시여부"] != "예"]
-if only_apt:
-    df = df[df["용도"] == "공동주택"]
+    only_flag = st.checkbox("난방확인 대상만 (K-apt 난방방식과 다른 단지)", value=False)
+    search = st.text_input("아파트명 검색")
+
+df = base[base["난방구분"].isin(sel_heat) & base["용도"].isin(sel_yong)]
 if sel_sgg:
     df = df[df["시군구명"].isin(sel_sgg)]
+if sel_svc:
+    df = df[df["고객센터"].isin(sel_svc)]
 known = df["준공연도"].notna()
 in_year = df["준공연도"].between(*sel_year).fillna(False).astype(bool)
 df = df[in_year | (~known & incl_unknown)]
 df = df[df["세대수"] >= min_hh]
+if only_flag:
+    df = df[df["난방확인"] != ""]
+if search:
+    df = df[df["아파트명"].str.contains(search, na=False, regex=False) |
+            df["K-apt단지명"].fillna("").str.contains(search, regex=False)]
 df = df.sort_values(["사용승인일", "공급승인일자", "세대수"], ascending=[True, True, False],
                     na_position="last").reset_index(drop=True)
 
@@ -105,7 +124,7 @@ st.caption("  ".join(f"● {k}" for k in sel_heat if k in HEAT_HEX))
 COLS = {"아파트명": "아파트명", "K-apt단지명": "K-apt 단지명", "시군구명": "시군구", "도로명주소": "도로명주소",
         "난방구분": "난방구분", "K-apt난방방식": "K-apt 난방", "난방확인": "난방확인", "세대수": "세대수",
         "사용승인일": "사용승인일(준공)", "경과연수": "경과연수", "공급승인일자": "공급승인일자",
-        "관리사무소전화": "관리사무소", "고객센터": "고객센터", "고시여부": "고시지역", "K-apt매칭": "매칭방법"}
+        "관리사무소전화": "관리사무소", "고객센터": "고객센터", "K-apt매칭": "매칭방법"}
 out = df[list(COLS)].rename(columns=COLS)
 
 st.subheader(f"📋 목록 ({len(out):,}건)")
@@ -125,7 +144,7 @@ for c in ("사용승인일(준공)", "공급승인일자"):
 with pd.ExcelWriter(buf, engine="openpyxl") as w:
     xl.to_excel(w, index=False, sheet_name="영업대상")
     ws = w.sheets["영업대상"]
-    for col, width in zip("ABCDEFGHIJKLMNO", [24, 22, 8, 28, 14, 10, 14, 8, 13, 8, 13, 14, 22, 8, 14]):
+    for col, width in zip("ABCDEFGHIJKLMN", [24, 22, 8, 28, 14, 10, 14, 8, 13, 8, 13, 14, 22, 14]):
         ws.column_dimensions[col].width = width
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = ws.dimensions
