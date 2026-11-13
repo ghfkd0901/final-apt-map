@@ -73,6 +73,7 @@ def load_data():
         if c not in df.columns:
             df[c] = None
     df["K-apt난방방식_표시"] = df["K-apt난방방식"].fillna("-")
+    df["고시지역명_표시"] = df["고시지역명"].fillna("")
     df["heat_color"] = df["난방구분"].apply(get_color)
     df["era_color"]  = df["승인연도구간"].map(ERA_COLORS)
     return df

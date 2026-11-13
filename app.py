@@ -10,5 +10,6 @@ st.set_page_config(
 pg = st.navigation([
     st.Page("views/map.py", title="공동주택 지도", icon="🏢", default=True),
     st.Page("views/sales.py", title="영업대상", icon="🎯"),
+    st.Page("views/about.py", title="데이터 안내", icon="📖"),
 ])
 pg.run()
